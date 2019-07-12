@@ -50,8 +50,8 @@ type evalResult struct {
 func Validate(m *plugins.Manager, bs []byte) (*Config, error) {
 
 	cfg := Config{
-		Addr:  defaultAddr,
-		Query: defaultQuery,
+		Addr:   defaultAddr,
+		Query:  defaultQuery,
 		DryRun: defaultDryRun,
 	}
 
@@ -118,8 +118,8 @@ func (p *envoyExtAuthzGrpcServer) listen() {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"addr":  p.cfg.Addr,
-		"query": p.cfg.Query,
+		"addr":    p.cfg.Addr,
+		"query":   p.cfg.Query,
 		"dry-run": p.cfg.DryRun,
 	}).Infof("Starting gRPC server.")
 
@@ -213,10 +213,10 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 		result.txnID = txn.ID()
 
 		logrus.WithFields(logrus.Fields{
-			"input": input,
-			"query": p.cfg.Query,
+			"input":   input,
+			"query":   p.cfg.Query,
 			"dry-run": p.cfg.DryRun,
-			"txn":   result.txnID,
+			"txn":     result.txnID,
 		}).Infof("Executing policy query.")
 
 		opts = append(opts,
