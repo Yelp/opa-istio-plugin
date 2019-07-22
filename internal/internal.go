@@ -269,7 +269,8 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	if err == nil {
-		var x interface{} = result.decision
+		//var x interface{} = result.decision
+		var x interface{} = "hello"
 		info.Results = &x
 	}
 
