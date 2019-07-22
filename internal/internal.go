@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -228,7 +229,9 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			rego.Transaction(txn),
 			rego.Runtime(p.manager.Info))
 
-		rs, err := rego.New(opts...).Eval(ctx)
+		r := rego.New(opts...)
+		rs, err := r.Eval(ctx)
+		rego.PrintTrace(os.Stdout, r)
 
 		// In "dry-run" mode, ignore all failure conditions
 		// even ones that would typically be considered an error
