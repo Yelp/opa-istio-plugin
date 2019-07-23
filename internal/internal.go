@@ -269,12 +269,17 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 		Metrics:    result.metrics,
 	}
 
+	logrus.WithField("dpopes", "before log stuff").Fatalf("Dpopes Debug")
 	if err == nil {
+		logrus.WithField("dpopes", "error was nil").Fatalf("Dpopes Debug")
 		var x interface{} = result.decision
-		var json_bytes, _ = json.Marshal(x)
+		var json_bytes, err = json.Marshal(x)
+		logrus.WithField("err", err).Fatalf("Dpopes Debug")
 		var json_string interface{} = string(json_bytes)
+		logrus.WithField("json_string", json_string).Fatalf("Dpopes Debug")
 		info.Results = &json_string
 	} else {
+		logrus.WithField("dpopes", "error was not nil").Fatalf("Dpopes Debug")
 		var fake_results interface{} = string("foo")
 		info.Results = &fake_results
 	}
