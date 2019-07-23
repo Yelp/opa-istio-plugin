@@ -133,7 +133,9 @@ The OPA-Istio plugin supports the following configuration fields:
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugins["envoy_ext_authz_grpc"].addr` | No | Set listening address of Envoy External Authorization gRPC server. This must match the value configured in the Envoy Filter resource. Default: `:9191`. |
-| `plugins["envoy_ext_authz_grpc"].query` | No | Specifies the name of the policy decision to query. The policy decision must be return a `boolean` value. `true` indicates the request should be allowed and `false` indicates the request should be denied. Default: `data.istio.authz.allow`. |
+| `plugins["envoy_ext_authz_grpc"].query` | No | Specifies the name of the policy decision to query. The policy decision must be return a `boolean` value (unless `dry-run` is `true`). `true` indicates the request should be allowed and `false` indicates the request should be denied. Default: `data.istio.authz.allow`. |
+| `plugins["envoy_ext_authz_grpc"].dry-run` | No | Configures the Envoy External Authorization gRPC server to unconditionally return a policy decision of `true`. Default: `false`. |
+
 
 In the [Quick Start](#quick-start) section an OPA policy is loaded via a volume-mounted ConfigMap. For production deployments, we recommend serving policy [Bundles](http://www.openpolicyagent.org/docs/bundles.html) from a remote HTTP server. For example:
 
@@ -154,6 +156,7 @@ plugins:
     envoy_ext_authz_grpc:
         addr: :9191
         query: data.istio.authz.allow
+        dry-run: false
 ```
 
 ## Example Policy
