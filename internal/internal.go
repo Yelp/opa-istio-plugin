@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,15 +160,8 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 	status := int32(google_rpc.PERMISSION_DENIED)
 
-	var allow, ok bool
-	allow, ok = result.decision.(bool)
-	if !ok {
-		// This means the decision was not a boolean.
-		// For dry-run, this may be expected, e.g. if the
-		// query result is a complex type. This is handled by the dry-run check below
-		// Otherwise, failure for this to parse as bool is unexpected, so we set allow to false
-		allow = false
-	}
+	var allow bool
+	allow, err = strconv.ParseBool(result.decision.(string))
 	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
@@ -190,7 +184,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	logrus.WithFields(logrus.Fields{
 		"query":               p.cfg.Query,
 		"dry-run":             p.cfg.DryRun,
-		"decision":            string(util.MustMarshalJSON(result.decision)),
+		"decision":            result.decision,
 		"err":                 err,
 		"txn":                 result.txnID,
 		"metrics":             result.metrics.All(),
@@ -262,7 +256,7 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			}
 		}
 
-		result.decision = decision
+		result.decision = string(util.MustMarshalJSON(decision))
 		return nil
 	})
 
