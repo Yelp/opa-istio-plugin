@@ -41,7 +41,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   bool
+	decision   interface{}
 	metrics    metrics.Metrics
 }
 
@@ -160,7 +160,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 	status := int32(google_rpc.PERMISSION_DENIED)
 
-	if p.cfg.DryRun || result.decision {
+	if p.cfg.DryRun || result.decision.(bool) {
 		status = int32(google_rpc.OK)
 	}
 
@@ -199,7 +199,8 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 	err := storage.Txn(ctx, p.manager.Store, storage.TransactionParams{}, func(txn storage.Transaction) error {
 
 		var err error
-		var decision, ok bool
+		var ok bool
+		var decision interface{}
 
 		result.revision, err = getRevision(ctx, p.manager.Store, txn)
 		if err != nil {
@@ -269,9 +270,13 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	if err == nil {
-		//var x interface{} = result.decision
-		var x interface{} = "hello"
-		info.Results = &x
+		var x interface{} = result.decision
+		var json_bytes, _ = json.Marshal(x)
+		var json_string interface{} = string(json_bytes)
+		info.Results = &json_string
+	} else {
+		var fake_results interface{} = string("foo")
+		info.Results = &fake_results
 	}
 
 	return plugin.Log(ctx, info)
