@@ -41,7 +41,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   interface{}
+	decision   string
 	metrics    metrics.Metrics
 }
 
@@ -161,7 +161,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	status := int32(google_rpc.PERMISSION_DENIED)
 
 	var allow bool
-	allow, err = strconv.ParseBool(result.decision.(string))
+	allow, err = strconv.ParseBool(result.decision)
 	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
@@ -237,26 +237,30 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 		// In "dry-run" mode, we just log all failure conditions
 		// even ones that would typically be considered an error
 		if err != nil {
+			err = fmt.Errorf("Error during Rego eval: %s", err.Error())
+		} else if len(rs) == 0 {
+			err = fmt.Errorf("Rego eval length was zero")
+		} else if decision, ok = rs[0].Expressions[0].Value.(interface{}); !ok || len(rs) > 1 {
+			err = fmt.Errorf("Decision was not interface{} OR len(rs) > 1")
+		}
+
+		if err != nil {
 			if p.cfg.DryRun {
-				logrus.WithField("err", err).Warnf("Error during Rego eval.")
+				logrus.Warnf(err.Error())
 			} else {
 				return err
 			}
-		} else if len(rs) == 0 {
-			if p.cfg.DryRun {
-				logrus.Warnf("Rego eval length was zero")
-			} else {
-				return fmt.Errorf("undefined decision")
-			}
-		} else if decision, ok = rs[0].Expressions[0].Value.(interface{}); !ok || len(rs) > 1 {
-			if p.cfg.DryRun {
-				logrus.Warnf("Decision was not interface{} OR len(rs) > 1")
-			} else {
-				return fmt.Errorf("Decision was not interface{} OR len(rs) > 1")
-			}
 		}
 
-		result.decision = string(util.MustMarshalJSON(decision))
+		jsonBytes, err := json.Marshal(decision)
+		if err == nil {
+			result.decision = string(jsonBytes)
+		} else {
+			// Fallback to an empty string and log a warning
+			result.decision = ""
+			logrus.WithField("decision", decision).Warnf("Decision could not be encoded as json: %s", err.Error())
+		}
+
 		return nil
 	})
 
@@ -280,7 +284,8 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	if err == nil {
-		info.Results = &result.decision
+		var x interface{} = result.decision
+		info.Results = &x
 	}
 
 	return plugin.Log(ctx, info)
