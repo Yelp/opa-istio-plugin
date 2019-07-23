@@ -40,7 +40,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   bool
+	decision   interface{}
 	metrics    metrics.Metrics
 }
 
@@ -159,7 +159,16 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 	status := int32(google_rpc.PERMISSION_DENIED)
 
-	if p.cfg.DryRun || result.decision {
+	var allow, ok bool
+	allow, ok = result.decision.(bool)
+	if !ok {
+		// This means the decision was not a boolean.
+		// For dry-run, this may be expected, e.g. if the
+		// query result is a complex type. This is handled by the dry-run check below
+		// Otherwise, failure for this to parse as bool is unexpected, so we set allow to false
+		allow = false
+	}
+	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
 
@@ -181,7 +190,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	logrus.WithFields(logrus.Fields{
 		"query":               p.cfg.Query,
 		"dry-run":             p.cfg.DryRun,
-		"decision":            result.decision,
+		"decision":            string(util.MustMarshalJSON(result.decision)),
 		"err":                 err,
 		"txn":                 result.txnID,
 		"metrics":             result.metrics.All(),
@@ -198,7 +207,8 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 	err := storage.Txn(ctx, p.manager.Store, storage.TransactionParams{}, func(txn storage.Transaction) error {
 
 		var err error
-		var decision, ok bool
+		var decision interface{}
+		var ok bool
 
 		result.revision, err = getRevision(ctx, p.manager.Store, txn)
 		if err != nil {
@@ -230,15 +240,25 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 
 		rs, err := rego.New(opts...).Eval(ctx)
 
-		// In "dry-run" mode, ignore all failure conditions
+		// In "dry-run" mode, we just log all failure conditions
 		// even ones that would typically be considered an error
-		if !p.cfg.DryRun {
-			if err != nil {
+		if err != nil {
+			if p.cfg.DryRun {
+				logrus.WithField("err", err).Warnf("Error during Rego eval.")
+			} else {
 				return err
-			} else if len(rs) == 0 {
+			}
+		} else if len(rs) == 0 {
+			if p.cfg.DryRun {
+				logrus.Warnf("Rego eval length was zero")
+			} else {
 				return fmt.Errorf("undefined decision")
-			} else if decision, ok = rs[0].Expressions[0].Value.(bool); !ok || len(rs) > 1 {
-				return fmt.Errorf("non-boolean decision")
+			}
+		} else if decision, ok = rs[0].Expressions[0].Value.(interface{}); !ok || len(rs) > 1 {
+			if p.cfg.DryRun {
+				logrus.Warnf("Decision was not interface{} OR len(rs) > 1")
+			} else {
+				return fmt.Errorf("Decision was not interface{} OR len(rs) > 1")
 			}
 		}
 
@@ -266,8 +286,7 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	if err == nil {
-		var x interface{} = result.decision
-		info.Results = &x
+		info.Results = &result.decision
 	}
 
 	return plugin.Log(ctx, info)
