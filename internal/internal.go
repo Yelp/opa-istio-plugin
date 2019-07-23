@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 
 const defaultAddr = ":9191"
 const defaultQuery = "data.istio.authz.allow"
+const defaultDryRun = false
 
 var revisionPath = storage.MustParsePath("/system/bundle/manifest/revision")
 
@@ -39,7 +41,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   bool
+	decision   string
 	metrics    metrics.Metrics
 }
 
@@ -49,8 +51,9 @@ type evalResult struct {
 func Validate(m *plugins.Manager, bs []byte) (*Config, error) {
 
 	cfg := Config{
-		Addr:  defaultAddr,
-		Query: defaultQuery,
+		Addr:   defaultAddr,
+		Query:  defaultQuery,
+		DryRun: defaultDryRun,
 	}
 
 	if err := util.Unmarshal(bs, &cfg); err != nil {
@@ -84,6 +87,7 @@ func New(m *plugins.Manager, cfg *Config) plugins.Plugin {
 type Config struct {
 	Addr        string `json:"addr"`
 	Query       string `json:"query"`
+	DryRun      bool   `json:"dry-run"`
 	parsedQuery ast.Body
 }
 
@@ -115,8 +119,9 @@ func (p *envoyExtAuthzGrpcServer) listen() {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"addr":  p.cfg.Addr,
-		"query": p.cfg.Query,
+		"addr":    p.cfg.Addr,
+		"query":   p.cfg.Query,
+		"dry-run": p.cfg.DryRun,
 	}).Infof("Starting gRPC server.")
 
 	if err := p.server.Serve(l); err != nil {
@@ -155,7 +160,9 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 	status := int32(google_rpc.PERMISSION_DENIED)
 
-	if result.decision {
+	var allow bool
+	allow, _ = strconv.ParseBool(result.decision)
+	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
 
@@ -176,6 +183,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 	logrus.WithFields(logrus.Fields{
 		"query":               p.cfg.Query,
+		"dry-run":             p.cfg.DryRun,
 		"decision":            result.decision,
 		"err":                 err,
 		"txn":                 result.txnID,
@@ -193,7 +201,8 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 	err := storage.Txn(ctx, p.manager.Store, storage.TransactionParams{}, func(txn storage.Transaction) error {
 
 		var err error
-		var decision, ok bool
+		var decision interface{}
+		var ok bool
 
 		result.revision, err = getRevision(ctx, p.manager.Store, txn)
 		if err != nil {
@@ -208,9 +217,10 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 		result.txnID = txn.ID()
 
 		logrus.WithFields(logrus.Fields{
-			"input": input,
-			"query": p.cfg.Query,
-			"txn":   result.txnID,
+			"input":   input,
+			"query":   p.cfg.Query,
+			"dry-run": p.cfg.DryRun,
+			"txn":     result.txnID,
 		}).Infof("Executing policy query.")
 
 		opts = append(opts,
@@ -224,15 +234,33 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 
 		rs, err := rego.New(opts...).Eval(ctx)
 
+		// In "dry-run" mode, we just log all failure conditions
+		// even ones that would typically be considered an error
 		if err != nil {
-			return err
+			err = fmt.Errorf("Error during Rego eval: %s", err.Error())
 		} else if len(rs) == 0 {
-			return fmt.Errorf("undefined decision")
-		} else if decision, ok = rs[0].Expressions[0].Value.(bool); !ok || len(rs) > 1 {
-			return fmt.Errorf("non-boolean decision")
+			err = fmt.Errorf("Rego eval length was zero")
+		} else if decision, ok = rs[0].Expressions[0].Value.(interface{}); !ok || len(rs) > 1 {
+			err = fmt.Errorf("Decision was not interface{} OR len(rs) > 1")
 		}
 
-		result.decision = decision
+		if err != nil {
+			if p.cfg.DryRun {
+				logrus.Warnf(err.Error())
+			} else {
+				return err
+			}
+		}
+
+		jsonBytes, err := json.Marshal(decision)
+		if err == nil {
+			result.decision = string(jsonBytes)
+		} else {
+			// Fallback to an empty string and log a warning
+			result.decision = ""
+			logrus.WithField("decision", decision).Warnf("Decision could not be encoded as json: %s", err.Error())
+		}
+
 		return nil
 	})
 
