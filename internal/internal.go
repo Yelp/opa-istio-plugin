@@ -16,6 +16,7 @@ import (
 
 	ctx "golang.org/x/net/context"
 
+	ext_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ext_authz "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	google_rpc "github.com/gogo/googleapis/google/rpc"
 	"github.com/open-policy-agent/opa/ast"
@@ -34,12 +35,14 @@ const defaultAddr = ":9191"
 const defaultQuery = "data.istio.authz.allow"
 
 var revisionPath = storage.MustParsePath("/system/bundle/manifest/revision")
+var errInvalidConfig = fmt.Errorf("invalid plugin config, query/boolean_query and response_query fields are mutually exclusive")
+var errConflictingQuery = fmt.Errorf("specify either the \"query\" or \"boolean_query\" field")
 
 type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   bool
+	decision   interface{}
 	metrics    metrics.Metrics
 }
 
@@ -49,18 +52,41 @@ type evalResult struct {
 func Validate(m *plugins.Manager, bs []byte) (*Config, error) {
 
 	cfg := Config{
-		Addr:  defaultAddr,
-		Query: defaultQuery,
+		Addr: defaultAddr,
 	}
 
 	if err := util.Unmarshal(bs, &cfg); err != nil {
 		return nil, err
 	}
 
-	parsedQuery, err := ast.ParseBody(cfg.Query)
+	var query string
+
+	if cfg.ResponseQuery != "" {
+		if cfg.Query != "" || cfg.BooleanQuery != "" {
+			return nil, errInvalidConfig
+		}
+		query = cfg.ResponseQuery
+
+	} else {
+		if cfg.Query != "" && cfg.BooleanQuery != "" {
+			return nil, errConflictingQuery
+		}
+
+		if cfg.Query != "" {
+			logrus.Info("\"query\" field will be deprecated. Use \"boolean_query\" instead.")
+			query = cfg.Query
+		} else if cfg.BooleanQuery != "" {
+			query = cfg.BooleanQuery
+		} else {
+			query = defaultQuery
+		}
+	}
+
+	parsedQuery, err := ast.ParseBody(query)
 	if err != nil {
 		return nil, err
 	}
+
 	cfg.parsedQuery = parsedQuery
 
 	return &cfg, nil
@@ -82,9 +108,11 @@ func New(m *plugins.Manager, cfg *Config) plugins.Plugin {
 
 // Config represents the plugin configuration.
 type Config struct {
-	Addr        string `json:"addr"`
-	Query       string `json:"query"`
-	parsedQuery ast.Body
+	Addr          string `json:"addr"`
+	Query         string `json:"query"`
+	BooleanQuery  string `json:"boolean_query"`
+	ResponseQuery string `json:"response_query"`
+	parsedQuery   ast.Body
 }
 
 type envoyExtAuthzGrpcServer struct {
@@ -116,7 +144,7 @@ func (p *envoyExtAuthzGrpcServer) listen() {
 
 	logrus.WithFields(logrus.Fields{
 		"addr":  p.cfg.Addr,
-		"query": p.cfg.Query,
+		"query": p.cfg.parsedQuery.String(),
 	}).Infof("Starting gRPC server.")
 
 	if err := p.server.Serve(l); err != nil {
@@ -153,14 +181,54 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 		return nil, err
 	}
 
-	status := int32(google_rpc.PERMISSION_DENIED)
+	resp := &ext_authz.CheckResponse{}
 
-	if result.decision {
-		status = int32(google_rpc.OK)
-	}
+	switch decision := result.decision.(type) {
+	case bool:
+		status := int32(google_rpc.PERMISSION_DENIED)
+		if decision {
+			status = int32(google_rpc.OK)
+		}
 
-	resp := &ext_authz.CheckResponse{
-		Status: &google_rpc.Status{Code: status},
+		resp.Status = &google_rpc.Status{Code: status}
+
+	case map[string]interface{}:
+		status, err := getResponseStatus(decision)
+		if err != nil {
+			return nil, err
+		}
+
+		resp.Status = &google_rpc.Status{Code: status}
+
+		if p.cfg.ResponseQuery != "" {
+			responseHeaders, err := getResponseHeaders(decision)
+			if err != nil {
+				return nil, err
+			}
+
+			if status == int32(google_rpc.OK) {
+				resp.HttpResponse = &ext_authz.CheckResponse_OkResponse{
+					OkResponse: &ext_authz.OkHttpResponse{
+						Headers: responseHeaders,
+					},
+				}
+			} else {
+				body, err := getResponseBody(decision)
+				if err != nil {
+					return nil, err
+				}
+
+				resp.HttpResponse = &ext_authz.CheckResponse_DeniedResponse{
+					DeniedResponse: &ext_authz.DeniedHttpResponse{
+						Headers: responseHeaders,
+						Body:    body,
+					},
+				}
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("illegal value for policy evaluation result: %T", decision)
 	}
 
 	err = p.log(ctx, input, result, err)
@@ -175,7 +243,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"query":               p.cfg.Query,
+		"query":               p.cfg.parsedQuery.String(),
 		"decision":            result.decision,
 		"err":                 err,
 		"txn":                 result.txnID,
@@ -193,7 +261,6 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 	err := storage.Txn(ctx, p.manager.Store, storage.TransactionParams{}, func(txn storage.Transaction) error {
 
 		var err error
-		var decision, ok bool
 
 		result.revision, err = getRevision(ctx, p.manager.Store, txn)
 		if err != nil {
@@ -209,7 +276,7 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 
 		logrus.WithFields(logrus.Fields{
 			"input": input,
-			"query": p.cfg.Query,
+			"query": p.cfg.parsedQuery.String(),
 			"txn":   result.txnID,
 		}).Infof("Executing policy query.")
 
@@ -228,11 +295,11 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			return err
 		} else if len(rs) == 0 {
 			return fmt.Errorf("undefined decision")
-		} else if decision, ok = rs[0].Expressions[0].Value.(bool); !ok || len(rs) > 1 {
-			return fmt.Errorf("non-boolean decision")
+		} else if len(rs) > 1 {
+			return fmt.Errorf("multiple evaluation results")
 		}
 
-		result.decision = decision
+		result.decision = rs[0].Expressions[0].Value
 		return nil
 	})
 
@@ -249,7 +316,7 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 		Revision:   result.revision,
 		DecisionID: result.decisionID,
 		Timestamp:  time.Now(),
-		Query:      p.cfg.Query,
+		Query:      p.cfg.parsedQuery.String(),
 		Input:      &input,
 		Error:      err,
 		Metrics:    result.metrics,
@@ -261,6 +328,71 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	return plugin.Log(ctx, info)
+}
+
+// getResponseStatus returns the status of the evaluation.
+// The status is determined by the "status" key in the evaluation
+// result and is represented as a boolean value. If the key is missing, an
+// error will be returned.
+func getResponseStatus(result map[string]interface{}) (int32, error) {
+	status := int32(google_rpc.PERMISSION_DENIED)
+
+	var decision, ok bool
+	var val interface{}
+
+	if val, ok = result["status"]; !ok {
+		return 0, fmt.Errorf("unable to determine evaluation result due to missing \"status\" key")
+	}
+
+	if decision, ok = val.(bool); !ok {
+		return 0, fmt.Errorf("type assertion error")
+	}
+
+	if decision {
+		status = int32(google_rpc.OK)
+	}
+
+	return status, nil
+}
+
+func getResponseHeaders(result map[string]interface{}) ([]*ext_core.HeaderValueOption, error) {
+	var headers map[string]interface{}
+	var val interface{}
+	var ok bool
+
+	responseHeaders := []*ext_core.HeaderValueOption{}
+
+	if val, ok = result["headers"]; !ok {
+		return responseHeaders, nil
+	}
+
+	if headers, ok = val.(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("type assertion error")
+	}
+
+	for key, value := range headers {
+		headerValue := &ext_core.HeaderValue{
+			Key:   key,
+			Value: fmt.Sprintf("%v", value),
+		}
+
+		headerValueOption := &ext_core.HeaderValueOption{
+			Header: headerValue,
+		}
+
+		responseHeaders = append(responseHeaders, headerValueOption)
+	}
+	return responseHeaders, nil
+}
+
+func getResponseBody(result map[string]interface{}) (string, error) {
+	var ok bool
+	var val interface{}
+
+	if val, ok = result["body"]; !ok {
+		return "", nil
+	}
+	return fmt.Sprintf("%v", val), nil
 }
 
 func uuid4() (string, error) {
