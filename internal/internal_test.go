@@ -7,6 +7,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	ext_authz "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
@@ -198,7 +199,10 @@ func TestCheckDenyWithDryRunTrueAndBooleanDecision(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServer(&testPlugin{}, "data.istio.authz.allow", true)
+	// create custom logger
+	customLogger := &testPlugin{}
+
+	server := testAuthzServer(customLogger, "data.istio.authz.allow", true)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -206,6 +210,15 @@ func TestCheckDenyWithDryRunTrueAndBooleanDecision(t *testing.T) {
 	}
 	if output.Status.Code != int32(google_rpc.OK) {
 		t.Fatal("Expected exampleDeniedRequest to be allowed because dry-run=true but got:", output)
+	}
+
+	if len(customLogger.events) != 1 {
+		t.Fatal("Unexpected events:", customLogger.events)
+	}
+
+	// Verify that the log message contains the boolean result text
+	if (*customLogger.events[0].Result).(string) != "false" {
+		t.Fatal("Did not find expected decision result in the log entry")
 	}
 }
 
@@ -219,7 +232,10 @@ func TestCheckDenyWithDryRunTrueAndNonBooleanDecision(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServer(&testPlugin{}, "data.istio.authz", true)
+	// create custom logger
+	customLogger := &testPlugin{}
+
+	server := testAuthzServer(customLogger, "data.istio.authz", true)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -227,6 +243,18 @@ func TestCheckDenyWithDryRunTrueAndNonBooleanDecision(t *testing.T) {
 	}
 	if output.Status.Code != int32(google_rpc.OK) {
 		t.Fatal("Expected exampleDeniedRequest to be allowed because dry-run=true but got:", output)
+	}
+
+	if len(customLogger.events) != 1 {
+		t.Fatal("Unexpected events:", customLogger.events)
+	}
+
+	// Verify that the log message contains the full query result json text
+	if !strings.Contains(
+		(*customLogger.events[0].Result).(string),
+		"{\"allow\":false,\"required_roles\":[\"admin\"]",
+	) {
+		t.Fatal("Did not find expected decision result in the log entry")
 	}
 }
 

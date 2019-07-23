@@ -161,7 +161,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	status := int32(google_rpc.PERMISSION_DENIED)
 
 	var allow bool
-	allow, err = strconv.ParseBool(result.decision)
+	allow, _ = strconv.ParseBool(result.decision)
 	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
