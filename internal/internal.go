@@ -189,7 +189,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 		"txn":                 result.txnID,
 		"metrics":             result.metrics.All(),
 		"total_decision_time": time.Since(start),
-	}).Info("Returning policy decision.")
+	}).Debugf("Returning policy decision.")
 
 	return resp, nil
 }
@@ -221,7 +221,7 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			"query":   p.cfg.Query,
 			"dry-run": p.cfg.DryRun,
 			"txn":     result.txnID,
-		}).Infof("Executing policy query.")
+		}).Debugf("Executing policy query.")
 
 		opts = append(opts,
 			rego.Metrics(result.metrics),
