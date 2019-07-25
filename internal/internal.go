@@ -255,14 +255,15 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			}
 		}
 
-		jsonBytes, err := json.Marshal(decision)
-		if err == nil {
-			result.decision = string(jsonBytes)
-		} else {
-			// Fallback to an empty string and log a warning
-			result.decision = ""
-			logrus.WithField("decision", decision).Warnf("Decision could not be encoded as json: %s", err.Error())
-		}
+		//jsonBytes, err := json.Marshal(decision)
+		//if err == nil {
+		//	result.decision = string(jsonBytes)
+		//} else {
+		//	// Fallback to an empty string and log a warning
+		//	result.decision = ""
+		//	logrus.WithField("decision", decision).Warnf("Decision could not be encoded as json: %s", err.Error())
+		//}
+		result.decision = decision
 
 		return nil
 	})
