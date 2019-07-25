@@ -7,7 +7,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	ext_authz "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
@@ -217,7 +216,7 @@ func TestCheckDenyWithDryRunTrueAndBooleanDecision(t *testing.T) {
 	}
 
 	// Verify that the log message contains the boolean result text
-	if (*customLogger.events[0].Result).(string) != "false" {
+	if result, ok := (*customLogger.events[0].Result).(bool); !ok || result != false {
 		t.Fatal("Did not find expected decision result in the log entry")
 	}
 }
@@ -249,12 +248,18 @@ func TestCheckDenyWithDryRunTrueAndNonBooleanDecision(t *testing.T) {
 		t.Fatal("Unexpected events:", customLogger.events)
 	}
 
-	// Verify that the log message contains the full query result json text
-	if !strings.Contains(
-		(*customLogger.events[0].Result).(string),
-		"{\"allow\":false,\"required_roles\":[\"admin\"]",
-	) {
-		t.Fatal("Did not find expected decision result in the log entry")
+	// Verify that the log message contains the full query result structure
+	result, ok := (*customLogger.events[0].Result).(map[string]interface{})
+	if !ok {
+		t.Fatal("Result was not a map[string]interface{}: ", customLogger.events[0].Result)
+	}
+
+	allow, ok := result["allow"]
+	if !ok {
+		t.Fatal("Key \"allow\" was not present in the result: ",  result)
+	}
+	if allow != false {
+		t.Fatal("result[\"allow\"] was not false: ", allow)
 	}
 }
 

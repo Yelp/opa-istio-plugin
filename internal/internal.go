@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +40,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   string
+	decision   interface{}
 	metrics    metrics.Metrics
 }
 
@@ -164,7 +163,13 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	status := int32(google_rpc.PERMISSION_DENIED)
 
 	var allow bool
-	allow, _ = strconv.ParseBool(result.decision)
+	switch decision := result.decision.(type) {
+	case bool:
+		allow = decision
+	case interface{}:
+		allow = false
+	}
+
 	if p.cfg.DryRun || allow {
 		status = int32(google_rpc.OK)
 	}
