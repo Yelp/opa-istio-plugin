@@ -252,7 +252,7 @@ func TestCheckWithLoggerError(t *testing.T) {
 	}
 }
 
-func TestConfigValidWithQuery(t *testing.T) {
+func TestConfigValid(t *testing.T) {
 
 	m, err := plugins.New([]byte{}, "test", inmem.New())
 	if err != nil {
@@ -269,86 +269,8 @@ func TestConfigValidWithQuery(t *testing.T) {
 		t.Fatalf("Expected address :9292 but got %v", config.Addr)
 	}
 
-	if config.Query != "data.test" {
+	if config.parsedQuery.String() != "data.test" {
 		t.Fatalf("Expected query data.test but got %v", config.Query)
-	}
-}
-
-func TestConfigValidWithBooleanQuery(t *testing.T) {
-
-	m, err := plugins.New([]byte{}, "test", inmem.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	in := `{"addr": ":9292", "boolean_query": "data.test"}`
-	config, err := Validate(m, []byte(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if config.BooleanQuery != "data.test" {
-		t.Fatalf("Expected boolean query data.test but got %v", config.Query)
-	}
-}
-
-func TestConfigValidWithResponseQuery(t *testing.T) {
-
-	m, err := plugins.New([]byte{}, "test", inmem.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	in := `{"addr": ":9292", "response_query": "data.test"}`
-	config, err := Validate(m, []byte(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if config.ResponseQuery != "data.test" {
-		t.Fatalf("Expected response query data.test but got %v", config.Query)
-	}
-}
-
-func TestConfigInvalidWithQuery(t *testing.T) {
-
-	m, err := plugins.New([]byte{}, "test", inmem.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	in := `{"addr": ":9292",  "query": "data.test", "response_query": "data.test"}`
-	_, err = Validate(m, []byte(in))
-	if err == nil {
-		t.Fatal("Expected error but got nil.")
-	}
-}
-
-func TestConfigInvalidWithBooleanQuery(t *testing.T) {
-
-	m, err := plugins.New([]byte{}, "test", inmem.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	in := `{"addr": ":9292", "boolean_query": "data.test", "response_query": "data.test"}`
-	_, err = Validate(m, []byte(in))
-	if err == nil {
-		t.Fatal("Expected error but got nil.")
-	}
-}
-
-func TestConfigInvalidWithConflict(t *testing.T) {
-
-	m, err := plugins.New([]byte{}, "test", inmem.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	in := `{"addr": ":9292", "boolean_query": "data.test.foo", "query": "data.test"}`
-	_, err = Validate(m, []byte(in))
-	if err == nil {
-		t.Fatal("Expected error but got nil.")
 	}
 }
 
@@ -373,7 +295,7 @@ func TestConfigValidDefault(t *testing.T) {
 	}
 }
 
-func TestCheckAllowResponseQuery(t *testing.T) {
+func TestCheckAllowObjectDecision(t *testing.T) {
 
 	// Example Mixer Check Request for input:
 	// curl --user  bob:password  -o /dev/null -s -w "%{http_code}\n" http://${GATEWAY_URL}/api/v1/products
@@ -383,7 +305,7 @@ func TestCheckAllowResponseQuery(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServerwithResponseQuery(&testPlugin{})
+	server := testAuthzServerwithObjectDecision(&testPlugin{})
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -410,7 +332,7 @@ func TestCheckAllowResponseQuery(t *testing.T) {
 	assertHeaders(t, headers, expectedHeaders)
 }
 
-func TestCheckDenyResponseQuery(t *testing.T) {
+func TestCheckDenyObjectDecision(t *testing.T) {
 
 	exampleRequest := `{
 	"attributes": {
@@ -428,7 +350,7 @@ func TestCheckDenyResponseQuery(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServerwithResponseQuery(&testPlugin{})
+	server := testAuthzServerwithObjectDecision(&testPlugin{})
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -604,7 +526,7 @@ func testAuthzServer(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
 	return s
 }
 
-func testAuthzServerwithResponseQuery(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
+func testAuthzServerwithObjectDecision(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
 
 	module := `
 	package istio.authz
@@ -630,17 +552,17 @@ func testAuthzServerwithResponseQuery(customLogger plugins.Plugin) *envoyExtAuth
 		panic(err)
 	}
 
-	responseQuery := "data.istio.authz.allow"
-	parsedQuery, err := ast.ParseBody(responseQuery)
+	query := "data.istio.authz.allow"
+	parsedQuery, err := ast.ParseBody(query)
 	if err != nil {
 		panic(err)
 	}
 
 	s := &envoyExtAuthzGrpcServer{
 		cfg: Config{
-			Addr:          ":50052",
-			ResponseQuery: responseQuery,
-			parsedQuery:   parsedQuery,
+			Addr:        ":50052",
+			Query:       query,
+			parsedQuery: parsedQuery,
 		},
 		manager: m,
 	}

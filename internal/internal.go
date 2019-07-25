@@ -35,8 +35,6 @@ const defaultAddr = ":9191"
 const defaultQuery = "data.istio.authz.allow"
 
 var revisionPath = storage.MustParsePath("/system/bundle/manifest/revision")
-var errInvalidConfig = fmt.Errorf("invalid plugin config, query/boolean_query and response_query fields are mutually exclusive")
-var errConflictingQuery = fmt.Errorf("specify either the \"query\" or \"boolean_query\" field")
 
 type evalResult struct {
 	revision   string
@@ -52,37 +50,15 @@ type evalResult struct {
 func Validate(m *plugins.Manager, bs []byte) (*Config, error) {
 
 	cfg := Config{
-		Addr: defaultAddr,
+		Addr:  defaultAddr,
+		Query: defaultQuery,
 	}
 
 	if err := util.Unmarshal(bs, &cfg); err != nil {
 		return nil, err
 	}
 
-	var query string
-
-	if cfg.ResponseQuery != "" {
-		if cfg.Query != "" || cfg.BooleanQuery != "" {
-			return nil, errInvalidConfig
-		}
-		query = cfg.ResponseQuery
-
-	} else {
-		if cfg.Query != "" && cfg.BooleanQuery != "" {
-			return nil, errConflictingQuery
-		}
-
-		if cfg.Query != "" {
-			logrus.Info("\"query\" field will be deprecated. Use \"boolean_query\" instead.")
-			query = cfg.Query
-		} else if cfg.BooleanQuery != "" {
-			query = cfg.BooleanQuery
-		} else {
-			query = defaultQuery
-		}
-	}
-
-	parsedQuery, err := ast.ParseBody(query)
+	parsedQuery, err := ast.ParseBody(cfg.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -108,11 +84,9 @@ func New(m *plugins.Manager, cfg *Config) plugins.Plugin {
 
 // Config represents the plugin configuration.
 type Config struct {
-	Addr          string `json:"addr"`
-	Query         string `json:"query"`
-	BooleanQuery  string `json:"boolean_query"`
-	ResponseQuery string `json:"response_query"`
-	parsedQuery   ast.Body
+	Addr        string `json:"addr"`
+	Query       string `json:"query"`
+	parsedQuery ast.Body
 }
 
 type envoyExtAuthzGrpcServer struct {
@@ -144,7 +118,7 @@ func (p *envoyExtAuthzGrpcServer) listen() {
 
 	logrus.WithFields(logrus.Fields{
 		"addr":  p.cfg.Addr,
-		"query": p.cfg.parsedQuery.String(),
+		"query": p.cfg.Query,
 	}).Infof("Starting gRPC server.")
 
 	if err := p.server.Serve(l); err != nil {
@@ -200,30 +174,28 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 
 		resp.Status = &google_rpc.Status{Code: status}
 
-		if p.cfg.ResponseQuery != "" {
-			responseHeaders, err := getResponseHeaders(decision)
+		responseHeaders, err := getResponseHeaders(decision)
+		if err != nil {
+			return nil, err
+		}
+
+		if status == int32(google_rpc.OK) {
+			resp.HttpResponse = &ext_authz.CheckResponse_OkResponse{
+				OkResponse: &ext_authz.OkHttpResponse{
+					Headers: responseHeaders,
+				},
+			}
+		} else {
+			body, err := getResponseBody(decision)
 			if err != nil {
 				return nil, err
 			}
 
-			if status == int32(google_rpc.OK) {
-				resp.HttpResponse = &ext_authz.CheckResponse_OkResponse{
-					OkResponse: &ext_authz.OkHttpResponse{
-						Headers: responseHeaders,
-					},
-				}
-			} else {
-				body, err := getResponseBody(decision)
-				if err != nil {
-					return nil, err
-				}
-
-				resp.HttpResponse = &ext_authz.CheckResponse_DeniedResponse{
-					DeniedResponse: &ext_authz.DeniedHttpResponse{
-						Headers: responseHeaders,
-						Body:    body,
-					},
-				}
+			resp.HttpResponse = &ext_authz.CheckResponse_DeniedResponse{
+				DeniedResponse: &ext_authz.DeniedHttpResponse{
+					Headers: responseHeaders,
+					Body:    body,
+				},
 			}
 		}
 
@@ -243,7 +215,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"query":               p.cfg.parsedQuery.String(),
+		"query":               p.cfg.Query,
 		"decision":            result.decision,
 		"err":                 err,
 		"txn":                 result.txnID,
@@ -276,7 +248,7 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 
 		logrus.WithFields(logrus.Fields{
 			"input": input,
-			"query": p.cfg.parsedQuery.String(),
+			"query": p.cfg.Query,
 			"txn":   result.txnID,
 		}).Infof("Executing policy query.")
 
@@ -316,7 +288,7 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 		Revision:   result.revision,
 		DecisionID: result.decisionID,
 		Timestamp:  time.Now(),
-		Query:      p.cfg.parsedQuery.String(),
+		Query:      p.cfg.Query,
 		Input:      &input,
 		Error:      err,
 		Metrics:    result.metrics,

@@ -133,15 +133,11 @@ The OPA-Istio plugin supports the following configuration fields:
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugins["envoy_ext_authz_grpc"].addr` | No | Set listening address of Envoy External Authorization gRPC server. This must match the value configured in the Envoy Filter resource. Default: `:9191`. |
-| `plugins["envoy_ext_authz_grpc"].query` | No | Specifies the name of the policy decision to query. The policy decision must return a `boolean` value. `true` indicates the request should be allowed and `false` indicates the request should be denied. Default: `data.istio.authz.allow`. **Note: This field will be deprecated soon. Use `boolean_query` instead.**|
-| `plugins["envoy_ext_authz_grpc"].boolean_query` | No | Specifies the name of the policy decision to query. The policy decision must return a `boolean` value. `true` indicates the request should be allowed and `false` indicates the request should be denied. Default: `data.istio.authz.allow`.|
-| `plugins["envoy_ext_authz_grpc"].response_query` | No | Specifies the name of the policy decision to query. The policy decision must be an object containing the `status` key set to either `true` or `false` to indicate if the request is allowed or not respectively. The policy decision can optionally contain a `headers` field to send custom headers to the downstream client or upstream. Also an optional `body` field can be included in the policy decision to send a response body data to the downstream client.|
+| `plugins["envoy_ext_authz_grpc"].query` | No | Specifies the name of the policy decision to query. The policy decision can either be a `boolean` or an `object`. If boolean, `true` indicates the request should be allowed and `false` indicates the request should be denied. If the policy decision is an object, it **must** contain the `status` key set to either `true` or `false` to indicate if the request is allowed or not respectively. It can optionally contain a `headers` field to send custom headers to the downstream client or upstream. Also an optional `body` field can be included in the policy decision to send a response body data to the downstream client. Default: `data.istio.authz.allow`.|
 
-`boolean_query` and `query` fields are equivalent wherein both specify a policy that returns a `boolean` value. The `query` field will be deprecated soon and we recommend using the `boolean_query` field instead. A configuration containing both the `boolean_query` and `query` fields is considered invalid. Also a plugin configuration can include either a `boolean_query` or `response_query` field to specify the name of the policy decision to query.
+If the configuration does not specify the `query` field, `data.istio.authz.allow` will be considered as the default name of the policy decision to query. The policy decision returned by the rule specified by the default `query` is `boolean` in nature.
 
-If the configuration does not specify a `boolean_query` or `response_query`, a default **boolean** query `data.istio.authz.allow` will be considered as the name of the policy decision to query.
-
-The policy decision returned by the rule specified by the `boolean_query` (or `query`) field is boolean in nature and hence indicates if a request is allowed or not. When a `response_query` is specified, the queried rule is expected to return an object that not only indicates if a request is allowed or not but also provides optional response headers and body that can be sent to the downstream client or upstream. An example of such a rule can be seen below in the [Example Policy with Response](#example-policy-with-response) section.
+An example of a rule that returns an object that not only indicates if a request is allowed or not but also provides optional response headers and body that can be sent to the downstream client or upstream can be seen below in the [Example Policy with Object Response](#example-policy-with-object-response) section.
 
 In the [Quick Start](#quick-start) section an OPA policy is loaded via a volume-mounted ConfigMap. For production deployments, we recommend serving policy [Bundles](http://www.openpolicyagent.org/docs/bundles.html) from a remote HTTP server. For example:
 
@@ -161,7 +157,7 @@ bundle:
 plugins:
     envoy_ext_authz_grpc:
         addr: :9191
-        boolean_query: data.istio.authz.allow
+        query: data.istio.authz.allow
 ```
 
 ## Example Policy
@@ -288,9 +284,9 @@ allow {
 }
 ```
 
-## Example Policy with Response
+## Example Policy with Object Response
 
-The `allow` rule in the below policy when queried using `response_query: data.istio.authz.allow` generates an `object` that provides the status of the request (ie. `allowed` or `denied`) alongwith some headers and body data which will be included in the response that is sent back to the downstream client or upstream.
+The `allow` rule in the below policy when queried generates an `object` that provides the status of the request (ie. `allowed` or `denied`) alongwith some headers and body data which will be included in the response that is sent back to the downstream client or upstream.
 
 ```ruby
 package istio.authz
