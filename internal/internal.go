@@ -16,6 +16,7 @@ import (
 
 	ctx "golang.org/x/net/context"
 
+	ext_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ext_authz "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	google_rpc "github.com/gogo/googleapis/google/rpc"
 	"github.com/open-policy-agent/opa/ast"
@@ -39,7 +40,7 @@ type evalResult struct {
 	revision   string
 	decisionID string
 	txnID      uint64
-	decision   bool
+	decision   interface{}
 	metrics    metrics.Metrics
 }
 
@@ -64,6 +65,7 @@ func Validate(m *plugins.Manager, bs []byte) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	cfg.parsedQuery = parsedQuery
 
 	return &cfg, nil
@@ -156,14 +158,52 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 		return nil, err
 	}
 
-	status := int32(google_rpc.PERMISSION_DENIED)
+	resp := &ext_authz.CheckResponse{}
 
-	if result.decision {
-		status = int32(google_rpc.OK)
-	}
+	switch decision := result.decision.(type) {
+	case bool:
+		status := int32(google_rpc.PERMISSION_DENIED)
+		if decision {
+			status = int32(google_rpc.OK)
+		}
 
-	resp := &ext_authz.CheckResponse{
-		Status: &google_rpc.Status{Code: status},
+		resp.Status = &google_rpc.Status{Code: status}
+
+	case map[string]interface{}:
+		status, err := getResponseStatus(decision)
+		if err != nil {
+			return nil, err
+		}
+
+		resp.Status = &google_rpc.Status{Code: status}
+
+		responseHeaders, err := getResponseHeaders(decision)
+		if err != nil {
+			return nil, err
+		}
+
+		if status == int32(google_rpc.OK) {
+			resp.HttpResponse = &ext_authz.CheckResponse_OkResponse{
+				OkResponse: &ext_authz.OkHttpResponse{
+					Headers: responseHeaders,
+				},
+			}
+		} else {
+			body, err := getResponseBody(decision)
+			if err != nil {
+				return nil, err
+			}
+
+			resp.HttpResponse = &ext_authz.CheckResponse_DeniedResponse{
+				DeniedResponse: &ext_authz.DeniedHttpResponse{
+					Headers: responseHeaders,
+					Body:    body,
+				},
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("illegal value for policy evaluation result: %T", decision)
 	}
 
 	err = p.log(ctx, input, result, err)
@@ -196,7 +236,6 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 	err := storage.Txn(ctx, p.manager.Store, storage.TransactionParams{}, func(txn storage.Transaction) error {
 
 		var err error
-		var decision, ok bool
 
 		result.revision, err = getRevision(ctx, p.manager.Store, txn)
 		if err != nil {
@@ -231,11 +270,11 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			return err
 		} else if len(rs) == 0 {
 			return fmt.Errorf("undefined decision")
-		} else if decision, ok = rs[0].Expressions[0].Value.(bool); !ok || len(rs) > 1 {
-			return fmt.Errorf("non-boolean decision")
+		} else if len(rs) > 1 {
+			return fmt.Errorf("multiple evaluation results")
 		}
 
-		result.decision = decision
+		result.decision = rs[0].Expressions[0].Value
 		return nil
 	})
 
@@ -264,6 +303,71 @@ func (p *envoyExtAuthzGrpcServer) log(ctx context.Context, input interface{}, re
 	}
 
 	return plugin.Log(ctx, info)
+}
+
+// getResponseStatus returns the status of the evaluation.
+// The status is determined by the "status" key in the evaluation
+// result and is represented as a boolean value. If the key is missing, an
+// error will be returned.
+func getResponseStatus(result map[string]interface{}) (int32, error) {
+	status := int32(google_rpc.PERMISSION_DENIED)
+
+	var decision, ok bool
+	var val interface{}
+
+	if val, ok = result["status"]; !ok {
+		return 0, fmt.Errorf("unable to determine evaluation result due to missing \"status\" key")
+	}
+
+	if decision, ok = val.(bool); !ok {
+		return 0, fmt.Errorf("type assertion error")
+	}
+
+	if decision {
+		status = int32(google_rpc.OK)
+	}
+
+	return status, nil
+}
+
+func getResponseHeaders(result map[string]interface{}) ([]*ext_core.HeaderValueOption, error) {
+	var headers map[string]interface{}
+	var val interface{}
+	var ok bool
+
+	responseHeaders := []*ext_core.HeaderValueOption{}
+
+	if val, ok = result["headers"]; !ok {
+		return responseHeaders, nil
+	}
+
+	if headers, ok = val.(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("type assertion error")
+	}
+
+	for key, value := range headers {
+		headerValue := &ext_core.HeaderValue{
+			Key:   key,
+			Value: fmt.Sprintf("%v", value),
+		}
+
+		headerValueOption := &ext_core.HeaderValueOption{
+			Header: headerValue,
+		}
+
+		responseHeaders = append(responseHeaders, headerValueOption)
+	}
+	return responseHeaders, nil
+}
+
+func getResponseBody(result map[string]interface{}) (string, error) {
+	var ok bool
+	var val interface{}
+
+	if val, ok = result["body"]; !ok {
+		return "", nil
+	}
+	return fmt.Sprintf("%v", val), nil
 }
 
 func uuid4() (string, error) {
