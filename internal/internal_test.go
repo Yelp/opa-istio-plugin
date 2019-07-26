@@ -105,7 +105,7 @@ func TestCheckAllow(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServer(&testPlugin{})
+	server := testAuthzServer(&testPlugin{}, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestCheckAllowParsedPath(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServer(&testPlugin{})
+	server := testAuthzServer(&testPlugin{}, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestCheckAllowWithLogger(t *testing.T) {
 	// create custom logger
 	customLogger := &testPlugin{}
 
-	server := testAuthzServer(customLogger)
+	server := testAuthzServer(customLogger, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestCheckDeny(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServer(&testPlugin{})
+	server := testAuthzServer(&testPlugin{}, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestCheckDenyWithLogger(t *testing.T) {
 	// create custom logger
 	customLogger := &testPlugin{}
 
-	server := testAuthzServer(customLogger)
+	server := testAuthzServer(customLogger, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -236,7 +236,7 @@ func TestCheckWithLoggerError(t *testing.T) {
 	// create custom logger
 	customLogger := &testPluginError{}
 
-	server := testAuthzServer(customLogger)
+	server := testAuthzServer(customLogger, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestCheckAllowObjectDecision(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServerwithObjectDecision(&testPlugin{})
+	server := testAuthzServerwithObjectDecision(&testPlugin{}, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -350,7 +350,7 @@ func TestCheckDenyObjectDecision(t *testing.T) {
 		panic(err)
 	}
 
-	server := testAuthzServerwithObjectDecision(&testPlugin{})
+	server := testAuthzServerwithObjectDecision(&testPlugin{}, "data.istio.authz.allow", false)
 	ctx := context.Background()
 	output, err := server.Check(ctx, &req)
 	if err != nil {
@@ -455,7 +455,84 @@ func TestGetResponeHeaders(t *testing.T) {
 	}
 }
 
-func testAuthzServer(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
+func TestCheckDenyWithDryRunTrueAndBooleanDecision(t *testing.T) {
+
+	// Example Mixer Check Request for input:
+	// curl --user  alice:password  -o /dev/null -s -w "%{http_code}\n" http://${GATEWAY_URL}/api/v1/products
+
+	var req ext_authz.CheckRequest
+	if err := util.Unmarshal([]byte(exampleDeniedRequest), &req); err != nil {
+		panic(err)
+	}
+
+	// create custom logger
+	customLogger := &testPlugin{}
+
+	server := testAuthzServer(customLogger, "data.istio.authz.allow", true)
+	ctx := context.Background()
+	output, err := server.Check(ctx, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Status.Code != int32(google_rpc.OK) {
+		t.Fatal("Expected exampleDeniedRequest to be allowed because dry-run=true but got:", output)
+	}
+
+	if len(customLogger.events) != 1 {
+		t.Fatal("Unexpected events:", customLogger.events)
+	}
+
+	// Verify that the log message contains the boolean result text
+	if result, ok := (*customLogger.events[0].Result).(bool); !ok || result != false {
+		t.Fatal("Did not find expected decision result in the log entry")
+	}
+}
+
+func TestCheckDenyWithDryRunTrueAndNonBooleanDecision(t *testing.T) {
+
+	// Example Mixer Check Request for input:
+	// curl --user  alice:password  -o /dev/null -s -w "%{http_code}\n" http://${GATEWAY_URL}/api/v1/products
+
+	var req ext_authz.CheckRequest
+	if err := util.Unmarshal([]byte(exampleDeniedRequest), &req); err != nil {
+		panic(err)
+	}
+	// Force the policy to DENY the request
+	req.Attributes.Request.Http.Method = "POST"
+
+	// create custom logger
+	customLogger := &testPlugin{}
+
+	server := testAuthzServerwithObjectDecision(customLogger, "data.istio.authz.allow", true)
+	ctx := context.Background()
+	output, err := server.Check(ctx, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Status.Code != int32(google_rpc.OK) {
+		t.Fatal("Expected exampleDeniedRequest to be allowed because dry-run=true but got:", output)
+	}
+
+	if len(customLogger.events) != 1 {
+		t.Fatal("Unexpected events:", customLogger.events)
+	}
+
+	// Verify that the log message contains the full query result structure
+	result, ok := (*customLogger.events[0].Result).(map[string]interface{})
+	if !ok {
+		t.Fatal("Result was not a map[string]interface{}: ", customLogger.events[0].Result)
+	}
+
+	status, ok := result["status"]
+	if !ok {
+		t.Fatal("Key \"status\" was not present in the result: ", result)
+	}
+	if status != false {
+		t.Fatal("result[\"status\"] was not false: ", status)
+	}
+}
+
+func testAuthzServer(customLogger plugins.Plugin, query string, dryRun bool) *envoyExtAuthzGrpcServer {
 
 	// Define a RBAC policy to allow or deny requests based on user roles
 	module := `
@@ -509,7 +586,6 @@ func testAuthzServer(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
 		panic(err)
 	}
 
-	query := "data.istio.authz.allow"
 	parsedQuery, err := ast.ParseBody(query)
 	if err != nil {
 		panic(err)
@@ -519,6 +595,7 @@ func testAuthzServer(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
 		cfg: Config{
 			Addr:        ":50052",
 			Query:       query,
+			DryRun:      dryRun,
 			parsedQuery: parsedQuery,
 		},
 		manager: m,
@@ -526,7 +603,7 @@ func testAuthzServer(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
 	return s
 }
 
-func testAuthzServerwithObjectDecision(customLogger plugins.Plugin) *envoyExtAuthzGrpcServer {
+func testAuthzServerwithObjectDecision(customLogger plugins.Plugin, query string, dryRun bool) *envoyExtAuthzGrpcServer {
 
 	module := `
 	package istio.authz
@@ -552,7 +629,6 @@ func testAuthzServerwithObjectDecision(customLogger plugins.Plugin) *envoyExtAut
 		panic(err)
 	}
 
-	query := "data.istio.authz.allow"
 	parsedQuery, err := ast.ParseBody(query)
 	if err != nil {
 		panic(err)
@@ -562,6 +638,7 @@ func testAuthzServerwithObjectDecision(customLogger plugins.Plugin) *envoyExtAut
 		cfg: Config{
 			Addr:        ":50052",
 			Query:       query,
+			DryRun:      dryRun,
 			parsedQuery: parsedQuery,
 		},
 		manager: m,
