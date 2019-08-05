@@ -31,6 +31,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 const defaultAddr = ":9191"
@@ -85,6 +86,7 @@ func New(m *plugins.Manager, cfg *Config) plugins.Plugin {
 	}
 
 	ext_authz.RegisterAuthorizationServer(plugin.server, plugin)
+	reflection.Register(plugin.server)
 
 	return plugin
 }
