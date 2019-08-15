@@ -238,7 +238,7 @@ func (p *envoyExtAuthzGrpcServer) Check(ctx ctx.Context, req *ext_authz.CheckReq
 		"txn":                 result.txnID,
 		"metrics":             result.metrics.All(),
 		"total_decision_time": time.Since(start),
-	}).Debugf("Returning policy decision.")
+	}).Infof("Returning policy decision.")
 
 	// If dry-run mode, override the Status code to unconditionally Allow the request
 	// DecisionLogging should reflect what "would" have happened
@@ -279,7 +279,7 @@ func (p *envoyExtAuthzGrpcServer) eval(ctx context.Context, input ast.Value, opt
 			"query":   p.cfg.Query,
 			"dry-run": p.cfg.DryRun,
 			"txn":     result.txnID,
-		}).Debugf("Executing policy query.")
+		}).Infof("Executing policy query.")
 
 		opts = append(opts,
 			rego.Metrics(result.metrics),
